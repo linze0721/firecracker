@@ -162,6 +162,8 @@ Status fields: `state` is Idle, Running, Complete, Failed, or Aborted;
 `copied_bytes`, `total_bytes`, `wp_faults`, `elapsed_ms` (worker duration at
 termination), and nullable `error`. A terminal status persists until another
 accepted capture. There is one generation in flight, so no job-id namespace.
+The caller must serialize capture/status/abort ownership as a single controller;
+an old caller must not abort a newer caller's accepted generation.
 The caller already knows its unique output paths. There is no progress-poll
 requirement for worker liveness. Only **Complete** is loadable, after memory
 fsync when requested; state fsync is done before create returns. Parent directory
@@ -226,8 +228,13 @@ unchanged sibling pages.
 
 Hugetlb requires actual feature probing, hugepage-aligned registration/unprotect,
 and preservation of an entire host hugepage before release. Transparent hugepages
-are distinct and can split. The prototype rejects both rather than pretending
-4 KiB state is sufficient. Balloon inflate/free-page reporting/hinting can discard
+are distinct: normal anonymous mappings use base-page UFFD ioctl granularity and
+the kernel can split PMDs. The prototype rejects explicit `Hugetlbfs2M` and
+`Transparent` machine settings; it does **not** claim that host-wide THP is off.
+Host 109 reported `[always] madvise never`. Actual AnonHugePages counts and THP
+split costs were not measured, so no performance claim is made for them.
+
+Balloon inflate/free-page reporting/hinting can discard
 RAM or replace a File VMA; memory hotplug changes registrations/slots. These are
 rejected for the VM's lifetime in this prototype. Future support must capture
 old bytes before discard/remap and coordinate REMOVE/UNMAP events with the page
@@ -249,8 +256,13 @@ External P2 retains the immutable manifest/object lookup and decompression modul
 but no longer receives a readable UFFD descriptor. Replace, do not layer over,
 the old external-fault-handler protocol for this negotiated mode:
 
-1. FC sends a versioned `Missing {request_id, guest_offset, length, generation}`
-   message. P2 resolves immutable parent bytes and responds with an owned byte
+1. FC sends a versioned `Missing {request_id, backend_offset, length, generation}`
+   message. `backend_offset` is the flattened memory-file byte offset used by
+   P2's `Memory::read_chunk`, not guest GPA or host virtual address: FC translates
+   using its region mapping, so a guest GPA gap creates no backend gap. Version 1
+   requests are chunk-aligned and `generation` identifies the immutable manifest
+   hash. This deliberately avoids the ambiguous name `guest_offset`.
+   P2 resolves immutable parent bytes and responds with an owned byte
    payload or a sealed read-only memfd range plus request_id. Transport loss fails
    the VM explicitly; never return zero on a missing/corrupt object.
 2. FC alone issues `UFFDIO_COPY`. If the page is pending in an active cut, install
@@ -320,10 +332,10 @@ worker completion and restore-to-guest-checksum, not just HTTP load latency.
 
 The executable regression harness is
 [`tests/manual/background_snapshot.py`](../../tests/manual/background_snapshot.py).
-It boots a scratch checkpoint copy with a minimal init, keeps an 8 MiB checksum
+It boots the shared read-only checkpoint with a private 26 KiB initrd, keeps an 8 MiB checksum
 file on guest tmpfs, writes a pre-populated 128 MiB anonymous region continuously,
-and performs virtio root-disk reads. It tests abort before resume, optional ENOSPC
-with `--failure-dir` pointing to a small scratch tmpfs, then Full and Background
+and performs virtio root-disk reads. It tests abort before resume, ENOSPC with
+`--failure-dir` required to point to an empty tmpfs of at most 16 MiB, then Full and Background
 on the **same VM**, and restores each in a fresh process. An additional capture
 is compared byte-for-byte against a synchronous Full oracle at the same paused
 cut, while the guest writes after resume: this checks the actively modified
@@ -341,10 +353,16 @@ experiment without requiring the upstream artifact catalogue and Python stack.
 Hold `flock /root/fcexp.lock` across the entire experiment. Do not start when
 `leap109-nightly.service` is active/activating, or MemAvailable is below 6 GiB.
 The harness repeats those checks before boot/restore; use at most 4 GiB/2 vCPU.
-Prepare only `/root/fcexp-*/rootfs.ext4`, never the published checkpoint itself.
-The scratch root disk is exposed read-only (guest writes are tmpfs), so its
+Use the shared `/root/fcexp-shared/23a37f29.ext4` only after its owner announces
+readiness. Do not inject files into it or copy the entire image per experiment:
+the host root is ext4, so cross-filesystem `--reflink=auto` is a physical copy.
+The private initrd mounts the shared disk read-only, chroots, and runs the Python
+proof from an inherited initrd descriptor. Guest writes are only tmpfs, so the
 immutable disk root is stable for this memory experiment; actual writable-disk
 btrfs CoW latency is not included and must not be inferred from these numbers.
+The image must be cleanly unmounted; we deliberately do not use `noload` to
+silently skip journal recovery. A dirty image fails to mount on the read-only
+block device instead of mutating the base or presenting stale filesystem state.
 
 Build on the development workstation:
 
@@ -353,6 +371,35 @@ CC_x86_64_unknown_linux_musl=x86_64-linux-musl-gcc \
 CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-gcc \
 cargo build --locked --release --target x86_64-unknown-linux-musl -p firecracker
 ```
+
+Build the tiny private initrd without modifying a root image:
+
+```sh
+initdir=$(mktemp -d)
+x86_64-linux-musl-gcc -Wall -Wextra -Werror -static -O2 \
+  -o "$initdir/init" tests/manual/background_snapshot_init.c
+cp tests/manual/background_snapshot_guest.py "$initdir/proof.py"
+(cd "$initdir"; printf 'init\0proof.py\0' | cpio --null -o -H newc --owner=0:0) \
+  > /tmp/proof.cpio
+rm -rf "$initdir"
+```
+
+Copy only the binary, `/tmp/proof.cpio`, and direct harness into your scratch
+directory. With an owned small tmpfs for failure injection, run under the lock:
+
+```sh
+flock /root/fcexp.lock python3 background_snapshot.py \
+  --binary ./firecracker --kernel ./vmlinux --initrd ./proof.cpio \
+  --rootfs /root/fcexp-shared/23a37f29.ext4 --workdir ./run --failure-dir ./small
+```
+
+The harness deliberately retains logs, snapshots, and results for inspection,
+including on failure, but always stops its VMs. Copy `run/results.json` and any
+needed logs out, unmount your `small` tmpfs in the caller's EXIT trap, then remove
+only your `/root/fcexp-p3-bg` directory. Never remove the shared base or another
+experiment's files. A live-proof runner must own the flock for this entire
+sequence and release it well before the next nightly.
+
 
 Record live measurements and observed limitations in
 [`background-snapshot-results.md`](background-snapshot-results.md). These results

@@ -19,7 +19,7 @@ use serde::Serialize;
 use userfaultfd::{Event, FaultKind, FeatureFlags, IoctlFlags, RegisterMode, Uffd, UffdBuilder};
 use vm_memory::GuestMemoryBackend;
 
-use crate::vmm_config::snapshot::CreateSnapshotParams;
+use crate::vmm_config::snapshot::{CreateSnapshotParams, SnapshotType};
 use crate::vstate::memory::{Bytes, GuestAddress, GuestMemoryMmap, GuestMemoryRegion};
 
 const PAGE: usize = 4096;
@@ -85,17 +85,35 @@ impl BackgroundSnapshot {
     }
 
     pub(crate) fn ensure_idle(&self) -> io::Result<()> {
-        if self.status().state == SnapshotState::Running {
+        if self
+            .status
+            .lock()
+            .expect("panic=abort prevents status lock poisoning")
+            .state
+            == SnapshotState::Running
+        {
             return Err(io::Error::other("a background snapshot is already running"));
         }
         Ok(())
     }
 
     // Detach a prior generation even if validation of the next request fails.
-    pub(crate) fn prepare_next(&mut self) -> io::Result<()> {
+    pub(crate) fn prepare_next(&mut self, kind: SnapshotType) -> io::Result<()> {
         self.ensure_idle()?;
         self.stop();
         self.paths = None;
+        if kind == SnapshotType::Background {
+            self.ensure_enabled()?;
+        }
+        Ok(())
+    }
+
+    fn ensure_enabled(&self) -> io::Result<()> {
+        if !self.enabled {
+            return Err(io::Error::other(
+                "experimental Background snapshots require --no-seccomp",
+            ));
+        }
         Ok(())
     }
 
@@ -105,11 +123,7 @@ impl BackgroundSnapshot {
         params: &CreateSnapshotParams,
     ) -> io::Result<()> {
         self.ensure_idle()?;
-        if !self.enabled {
-            return Err(io::Error::other(
-                "experimental Background snapshots require --no-seccomp",
-            ));
-        }
+        self.ensure_enabled()?;
         self.stop();
         let file = OpenOptions::new()
             .write(true)

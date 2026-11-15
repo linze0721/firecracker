@@ -44,10 +44,11 @@ def register(fd, memory):
     return address
 
 
-def copy_fault(kernel_write):
+def copy_fault(kernel_write, populated=True):
     fd, features = new_uffd()
     memory = mmap.mmap(-1, PAGE, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
-    memory[0] = ord("A")
+    if populated:
+        memory[0] = ord("A")
     result = {"features": features}
     try:
         address = register(fd, memory)
@@ -77,7 +78,8 @@ def copy_fault(kernel_write):
         thread.join(6)
         assert not thread.is_alive()
         result["new_byte"] = chr(memory[0])
-        assert result["old_byte"] == "A" and result["new_byte"] == "B"
+        expected_old = "A" if populated else "\0"
+        assert result["old_byte"] == expected_old and result["new_byte"] == "B"
         return result
     finally:
         os.close(fd)
@@ -91,6 +93,8 @@ def main():
         "kernel": os.uname().release,
         "userspace_write": copy_fault(False),
         "kernel_read_into_wp": copy_fault(True),
+        "unpopulated_userspace_write": copy_fault(False, populated=False),
+        "unpopulated_kernel_write": copy_fault(True, populated=False),
     }
     fd, _ = new_uffd()
     try:

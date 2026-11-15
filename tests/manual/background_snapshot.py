@@ -3,13 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Direct Firecracker interface test; no shinud, jailer, TAP, or production disk writes.
 
-Run as root on 109 only after preparing a PRIVATE rootfs copy with --prepare-rootfs.
+Run as root on 109 with the shared checkpoint exposed read-only and a private
+initrd built from background_snapshot_init.c and background_snapshot_guest.py.
 The caller must hold flock /root/fcexp.lock throughout. Refuses nightly overlap and
 low host memory; uses one VM at a time, 1 GiB / 2 vCPU by default.
 
-python3 background_snapshot.py --prepare-rootfs /root/fcexp-p3-bg/rootfs.ext4
 flock /root/fcexp.lock python3 background_snapshot.py --binary ./firecracker \
-    --kernel ./vmlinux --rootfs ./rootfs.ext4 --workdir ./run --failure-dir ./small
+    --kernel ./vmlinux --initrd ./proof.cpio \
+    --rootfs /root/fcexp-shared/23a37f29.ext4 --workdir ./run --failure-dir ./small
 
 --failure-dir must be a caller-owned, empty, small tmpfs (e.g. size=8m).
 Output JSON includes create-call latency, full pause window, completion latency,
@@ -24,45 +25,8 @@ import os
 import re
 import socket
 import subprocess
-import tempfile
 import time
 from pathlib import Path
-
-GUEST = r"""#!/bin/sh
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev
-mkdir -p /dev/shm
-mount -t tmpfs -o size=512m tmpfs /dev/shm
-exec /usr/bin/python3 -u -c '
-import hashlib, mmap, os, struct, threading, time
-path="/dev/shm/bg-proof"
-data=bytes(range(256))*32768
-with open(path,"wb") as f: f.write(data)
-expected=hashlib.sha256(data).hexdigest()
-del data
-ram=mmap.mmap(-1,128*1024*1024)
-# Touch every page before READY; KVM must invalidate already writable mappings.
-ram[:]=b"X"*len(ram)
-def writer():
-    tick=0
-    while True:
-        tick+=1
-        payload=bytes([tick%256])*4096
-        for pos in range(0,len(ram),4096): ram[pos:pos+4096]=payload
-threading.Thread(target=writer,daemon=True).start()
-print("BG_READY checksum="+expected,flush=True)
-tick=0
-while True:
-    with open(path,"rb") as f: actual=hashlib.sha256(f.read()).hexdigest()
-    assert actual==expected
-    tick+=1
-    # Root disk reads exercise virtio-blk host writes to guest buffers too.
-    with open("/usr/bin/python3","rb") as f: f.read(1024*1024)
-    print("BG_ALIVE checksum="+actual+" tick="+str(tick),flush=True)
-    time.sleep(0.25)
-'
-"""
 
 
 class UnixHTTP(http.client.HTTPConnection):
@@ -100,20 +64,27 @@ def alive(log, offset=0):
 
 
 class VM:
-    def __init__(self, binary, directory):
+    def __init__(self, binary, directory, no_seccomp=True):
         self.directory = directory
         directory.mkdir()
         self.sock = directory / "api.sock"
         self.log = directory / "serial.log"
         self.output = self.log.open("wb")
+        command = [str(binary), "--api-sock", str(self.sock)]
+        if no_seccomp:
+            command.append("--no-seccomp")
         self.process = subprocess.Popen(
-            [str(binary), "--no-seccomp", "--api-sock", str(self.sock)],
+            command,
             stdin=subprocess.DEVNULL,
             stdout=self.output,
             stderr=subprocess.STDOUT,
         )
-        wait_for(lambda: self.sock.exists() or self.process.poll() is not None, 20)
-        assert self.process.poll() is None, self.log.read_text(errors="replace")
+        try:
+            wait_for(lambda: self.sock.exists() or self.process.poll() is not None, 20)
+            assert self.process.poll() is None, self.log.read_text(errors="replace")
+        except BaseException:
+            self.stop()
+            raise
 
     def call(self, method, path, data=None, expected=204):
         return request(self.sock, method, path, data, expected)
@@ -129,12 +100,15 @@ class VM:
 
 
 def safety():
-    state = subprocess.run(
+    query = subprocess.run(
         ["systemctl", "is-active", "leap109-nightly.service"],
         text=True,
         capture_output=True,
-    ).stdout.strip()
-    assert state not in ("active", "activating"), f"nightly is {state}; do not boot"
+    )
+    state = query.stdout.strip()
+    assert (
+        query.returncode == 3 and state == "inactive"
+    ), f"nightly query must confirm inactive; got rc={query.returncode}, state={state!r}"
     available = int(
         re.search(r"MemAvailable:\s+(\d+)", Path("/proc/meminfo").read_text())[1]
     )
@@ -142,39 +116,32 @@ def safety():
     return subprocess.check_output(["free", "-g"], text=True)
 
 
-def prepare_rootfs(path):
-    assert str(path).startswith("/root/fcexp-"), "only a scratch rootfs copy is allowed"
-    assert path.is_file()
-    with tempfile.TemporaryDirectory(prefix="bg-rootfs-") as mount:
-        subprocess.run(["mount", "-o", "loop", str(path), mount], check=True)
-        try:
-            script = Path(mount) / "sbin/shinu-bg-proof"
-            script.write_text(GUEST)
-            script.chmod(0o755)
-        finally:
-            subprocess.run(["umount", mount], check=True)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--prepare-rootfs", type=Path)
     parser.add_argument("--binary", type=Path)
     parser.add_argument("--kernel", type=Path)
+    parser.add_argument("--initrd", type=Path)
     parser.add_argument("--rootfs", type=Path)
     parser.add_argument("--workdir", type=Path)
-    parser.add_argument("--failure-dir", type=Path)
+    parser.add_argument("--failure-dir", type=Path, required=True)
     parser.add_argument("--mem-mib", type=int, default=1024)
     args = parser.parse_args()
-    if args.prepare_rootfs:
-        prepare_rootfs(args.prepare_rootfs.resolve())
-        return
     assert 512 <= args.mem_mib <= 4096
-    for name in ("binary", "kernel", "rootfs", "workdir"):
+    for name in ("binary", "kernel", "initrd", "rootfs", "workdir"):
         assert getattr(args, name), f"--{name} required"
         setattr(args, name, getattr(args, name).resolve())
     assert str(args.rootfs).startswith("/root/fcexp-")
     args.workdir.mkdir()
     results = {"free_before": safety(), "mem_size_mib": args.mem_mib, "vcpu_count": 2}
+    args.failure_dir = args.failure_dir.resolve()
+    assert str(args.failure_dir).startswith("/root/fcexp-")
+    filesystem = subprocess.check_output(
+        ["findmnt", "-n", "-o", "FSTYPE", "--target", str(args.failure_dir)], text=True
+    ).strip()
+    assert filesystem == "tmpfs", "failure-dir must be a private small tmpfs"
+    capacity = os.statvfs(args.failure_dir)
+    assert capacity.f_blocks * capacity.f_frsize <= 16 * 1024 * 1024
+    assert not any(args.failure_dir.iterdir()), "failure-dir must be empty"
     expected = hashlib.sha256(bytes(range(256)) * 32768).hexdigest()
     vm = VM(args.binary, args.workdir / "source")
     snapshots = []
@@ -189,7 +156,8 @@ def main():
             "/boot-source",
             {
                 "kernel_image_path": str(args.kernel),
-                "boot_args": "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro init=/sbin/shinu-bg-proof",
+                "initrd_path": str(args.initrd),
+                "boot_args": "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro rdinit=/init",
             },
         )
         vm.call(
@@ -206,9 +174,7 @@ def main():
         vm.call("PUT", "/actions", {"action_type": "InstanceStart"})
         assert wait_for(lambda: alive(vm.log))[0] == expected
         # Failure and abort run first, then a usable Full and Background from this same VM.
-        cases = [("abort", args.workdir)]
-        if args.failure_dir:
-            cases.append(("failure", args.failure_dir.resolve()))
+        cases = [("abort", args.workdir), ("failure", args.failure_dir)]
         cases += [
             ("consistency", args.workdir),
             ("Full", args.workdir),
@@ -267,6 +233,7 @@ def main():
                 ), status
                 if kind == "failure":
                     assert not state.exists() and not memory.exists()
+                    assert "os error 28" in status["error"], status
                 if kind in ("consistency", "Background"):
                     assert (
                         status["wp_faults"] > 0
@@ -354,6 +321,41 @@ def main():
             results[kind]["file_restore_background_rejected_cleanly"] = True
         finally:
             restored.stop()
+    results["free_before_default_seccomp"] = safety()
+    restricted = VM(args.binary, args.workdir / "default-seccomp", no_seccomp=False)
+    try:
+        _, state, memory = snapshots[0]
+        restricted.call(
+            "PUT",
+            "/snapshot/load",
+            {
+                "snapshot_path": str(state),
+                "mem_backend": {"backend_type": "File", "backend_path": str(memory)},
+                "resume_vm": True,
+            },
+        )
+        assert wait_for(lambda: alive(restricted.log))[0] == expected
+        restricted.call("PATCH", "/vm", {"state": "Paused"})
+        state = args.workdir / "restricted.state"
+        memory = args.workdir / "restricted.mem"
+        failure = restricted.call(
+            "PUT",
+            "/snapshot/create",
+            {
+                "snapshot_type": "Background",
+                "snapshot_path": str(state),
+                "mem_file_path": str(memory),
+            },
+            expected=400,
+        )
+        assert "--no-seccomp" in failure["fault_message"], failure
+        assert not state.exists() and not memory.exists()
+        offset = restricted.log.stat().st_size
+        restricted.call("PATCH", "/vm", {"state": "Resumed"})
+        assert wait_for(lambda: alive(restricted.log, offset))[0] == expected
+        results["default_seccomp_rejected_cleanly"] = True
+    finally:
+        restricted.stop()
     results["free_after"] = subprocess.check_output(["free", "-g"], text=True)
     (args.workdir / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     print(json.dumps(results, indent=2))

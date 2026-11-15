@@ -1,0 +1,77 @@
+{
+  "free_before": "               total        used        free      shared  buff/cache   available\nMem:              23           0          18           0           4          22\nSwap:              0           0           0\n",
+  "mem_size_mib": 1024,
+  "vcpu_count": 2,
+  "abort": {
+    "create_call_ms": 42.182838020380586,
+    "pause_ms": 49.49908802518621,
+    "total_completion_ms": 60.891620989423245,
+    "status": {
+      "state": "Aborted",
+      "copied_bytes": 1048576,
+      "total_bytes": 1073741824,
+      "wp_faults": 0,
+      "elapsed_ms": 4,
+      "error": "background snapshot aborted"
+    }
+  },
+  "failure": {
+    "create_call_ms": 25.842230999842286,
+    "pause_ms": 27.974924014415592,
+    "total_completion_ms": 81.62813202943653,
+    "status": {
+      "state": "Failed",
+      "copied_bytes": 8364032,
+      "total_bytes": 1073741824,
+      "wp_faults": 74,
+      "elapsed_ms": 17,
+      "error": "No space left on device (os error 28)"
+    }
+  },
+  "consistency": {
+    "create_call_ms": 19.250463985372335,
+    "pause_ms": 5597.991848015226,
+    "total_completion_ms": 9406.782798003405,
+    "status": {
+      "state": "Complete",
+      "copied_bytes": 1073741824,
+      "total_bytes": 1073741824,
+      "wp_faults": 3473,
+      "elapsed_ms": 3805,
+      "error": null
+    },
+    "full_memory_bytes_equal": true
+  },
+  "Full": {
+    "create_call_ms": 2816.7397790239193,
+    "pause_ms": 2818.3696269989014,
+    "total_completion_ms": 2818.370788998436,
+    "status": {
+      "state": "Complete"
+    },
+    "restore_to_checksum_ms": 606.4164600102231,
+    "restored_checksum": "7d212b9c884f5c77896de960ae17cc341cda43b14d6a971f34ca29ebd4badf7f",
+    "file_restore_background_rejected_cleanly": true
+  },
+  "Background": {
+    "create_call_ms": 74.03664698358625,
+    "pause_ms": 75.33632399281487,
+    "total_completion_ms": 4275.767351966351,
+    "status": {
+      "state": "Complete",
+      "copied_bytes": 1073741824,
+      "total_bytes": 1073741824,
+      "wp_faults": 3051,
+      "elapsed_ms": 4172,
+      "error": null
+    },
+    "restore_to_checksum_ms": 705.5347829591483,
+    "restored_checksum": "7d212b9c884f5c77896de960ae17cc341cda43b14d6a971f34ca29ebd4badf7f",
+    "file_restore_background_rejected_cleanly": true
+  },
+  "free_before_restore_Full": "               total        used        free      shared  buff/cache   available\nMem:              23           0          14           0           8          22\nSwap:              0           0           0\n",
+  "free_before_restore_Background": "               total        used        free      shared  buff/cache   available\nMem:              23           0          14           0           8          22\nSwap:              0           0           0\n",
+  "free_before_default_seccomp": "               total        used        free      shared  buff/cache   available\nMem:              23           0          14           0           8          22\nSwap:              0           0           0\n",
+  "default_seccomp_rejected_cleanly": true,
+  "free_after": "               total        used        free      shared  buff/cache   available\nMem:              23           1          14           0           8          22\nSwap:              0           0           0\n"
+}

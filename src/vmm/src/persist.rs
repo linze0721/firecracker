@@ -177,20 +177,12 @@ pub fn create_snapshot(
     vm_info: &VmInfo,
     params: &CreateSnapshotParams,
 ) -> Result<(), CreateSnapshotError> {
-    vmm.background_snapshot.prepare_next()?;
+    vmm.background_snapshot.prepare_next(params.snapshot_type)?;
     let background = params.snapshot_type == SnapshotType::Background;
     if background {
-        let config = vmm.full_config();
         if vmm.instance_info.state != crate::vmm_config::instance_info::VmState::Paused
             || vm_info.huge_pages != HugePageConfig::None
-            || config.balloon.is_some()
-            || config.memory_hotplug.is_some()
-            || !config.pmem_devices.is_empty()
-            || config.drives.iter().any(|drive| {
-                drive.socket.is_some()
-                    || drive.file_engine_type
-                        == Some(crate::vmm_config::drive::FileEngineType::Async)
-            })
+            || !vmm.background_snapshot_devices_supported()
         {
             return Err(io::Error::other(
                 "Background requires a paused KVM VM, base pages, no balloon/hotplug/pmem/vhost-user, and Sync block IO",

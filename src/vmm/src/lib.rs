@@ -478,6 +478,27 @@ impl Vmm {
         }
     }
 
+    // Do not materialize owned configurations merely to check device eligibility.
+    fn background_snapshot_devices_supported(&self) -> bool {
+        let mut supported = true;
+        self.device_manager.for_each_virtio_device(|device_type, device| {
+            match device_type {
+                VirtioDeviceType::Balloon | VirtioDeviceType::Mem | VirtioDeviceType::Pmem => {
+                    supported = false;
+                }
+                VirtioDeviceType::Block => {
+                    supported &= matches!(
+                        device.as_any().downcast_ref::<Block>(),
+                        Some(Block::Virtio(block))
+                            if block.file_engine_type() == crate::vmm_config::drive::FileEngineType::Sync
+                    );
+                }
+                _ => {}
+            }
+        });
+        supported
+    }
+
     /// Sends a resume command to the vCPUs.
     pub fn resume_vm(&mut self) -> Result<(), VmmError> {
         let kvm_vm = self
