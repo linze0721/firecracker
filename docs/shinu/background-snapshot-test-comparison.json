@@ -1,0 +1,84 @@
+{
+  "baseline_commit": "3de1de497e3e0ff2d8e7488714ff819d07d1432a",
+  "background_label": "Firecracker v1.18.0-shinu.1-bg",
+  "upstream_command_sources": [
+    "tests/host_tools/cargo_build.py:49-64",
+    "tests/integration_tests/build/test_unittests.py:18-26"
+  ],
+  "ci_environment": {
+    "RUST_TEST_THREADS": "1",
+    "RUST_BACKTRACE": "1",
+    "RUSTFLAGS": ""
+  },
+  "ci_arguments": [
+    "--locked",
+    "--target",
+    "x86_64-unknown-linux-musl",
+    "--all",
+    "--no-fail-fast",
+    "--",
+    "--nocapture"
+  ],
+  "ci_examples_arguments": [
+    "--locked",
+    "--target",
+    "x86_64-unknown-linux-musl",
+    "--all",
+    "--no-fail-fast",
+    "--examples",
+    "--",
+    "--nocapture"
+  ],
+  "runs": {
+    "baseline": {
+      "serial_main_passed": 1235,
+      "serial_main_failed": 0,
+      "serial_main_ignored": 1,
+      "vmm_unit_passed": 903,
+      "vmm_unit_failed": 0,
+      "examples_passed": 3,
+      "examples_failed": 0,
+      "original_four_cases": {
+        "device_manager::persist::tests::test_device_manager_persistence": "ok",
+        "devices::virtio::mem::device::tests::test_plug_request_success": "ok",
+        "devices::virtio::mem::device::tests::test_plug_request_too_big": "ok",
+        "devices::virtio::net::device::tests::test_read_tap_fail_event_handler": "ok"
+      },
+      "parallel_failed_cases": [
+        "device_manager::pci_mngr::tests::test_device_manager_persistence",
+        "devices::virtio::mem::device::tests::test_unplug_request_not_plugged",
+        "devices::virtio::net::device::tests::test_read_tap_fail_event_handler",
+        "devices::virtio::net::device::tests::test_rx_complex_desc_chain_mrg"
+      ],
+      "parallel_io_safety_abort": true,
+      "serial_log_sha256": "3c2983f804cc95572e47b190dbb46bd55bf3d7e3267ae90954d0554d9b688139",
+      "examples_log_sha256": "02c7963a66d0b908698af2d6ed490b9365d812abe43dda9035a6ef229cb56f65"
+    },
+    "rebased": {
+      "serial_main_passed": 1237,
+      "serial_main_failed": 0,
+      "serial_main_ignored": 1,
+      "vmm_unit_passed": 903,
+      "vmm_unit_failed": 0,
+      "examples_passed": 3,
+      "examples_failed": 0,
+      "original_four_cases": {
+        "device_manager::persist::tests::test_device_manager_persistence": "ok",
+        "devices::virtio::mem::device::tests::test_plug_request_success": "ok",
+        "devices::virtio::mem::device::tests::test_plug_request_too_big": "ok",
+        "devices::virtio::net::device::tests::test_read_tap_fail_event_handler": "ok"
+      },
+      "parallel_failed_cases": [
+        "device_manager::persist::tests::test_device_manager_persistence",
+        "devices::virtio::block::virtio::device::tests::test_end_of_region",
+        "devices::virtio::mem::device::tests::test_plug_request_success",
+        "devices::virtio::rng::device::tests::test_entropy_event",
+        "devices::virtio::rng::device::tests::test_bandwidth_rate_limiter",
+        "devices::virtio::vsock::unix::muxer::tests::test_muxer_killq"
+      ],
+      "parallel_io_safety_abort": false,
+      "serial_log_sha256": "9f8e311168395fb147bdac21ec53cae81b468b614ca8704bd5a8f6eb077dd787",
+      "examples_log_sha256": "dc6baee88ba42a3e27b9600528c3c62176bbd06eafda90630e3c59366951c405"
+    }
+  }
+}
