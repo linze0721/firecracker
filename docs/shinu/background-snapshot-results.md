@@ -197,3 +197,20 @@ and the shared base was untouched. No TAP was created. The owned copy process
 and orphan lock waiter had already exited; no deleted shinu checkpoint handle
 remained. After cleanup `free -g` showed used 0, free 15, cache 7, available
 22 GiB, swap 0. All lock holders from this slice have exited.
+
+## Branch provenance and production limits
+
+The branch was rebased onto published `shinu/v1.18`
+`5398e67f0c20564cb324ef3c1a312b5170493063`. Its changes after the original tag are
+the two kernel/build documentation commits `4e8403cec` and `5398e67f0`; this
+docs-only rebase does not change the measured runtime implementation. The new
+upstream pytest cases are explicitly scoped to x86_64 Linux 6.12+; older supported
+CI hosts are not claimed to support this experimental mode.
+
+The requested P1 fallible block-drain/flush preparation patch was not present in
+that published base when fetched. It remains a required production integration,
+in addition to guest application hooks, checked writable-disk cuts, dedicated
+worker seccomp, and a single-owner MISSING|WP broker. No general application
+consistency guarantee is claimed here. Independent review was source/file-scoped:
+its tool could not obtain a complete git diff, so a complete branch-wide
+independent review is not claimed either.
