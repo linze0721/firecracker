@@ -31,6 +31,11 @@ pub(crate) fn parse_put_snapshot(
         Some(request_type) => match request_type {
             "create" => parse_put_snapshot_create(body),
             "load" => parse_put_snapshot_load(body),
+            "abort" => {
+                let _: std::collections::HashMap<String, serde_json::Value> =
+                    serde_json::from_slice(body.raw())?;
+                Ok(ParsedRequest::new_sync(VmmAction::AbortBackgroundSnapshot))
+            }
             _ => Err(RequestError::InvalidPathMethod(
                 format!("/snapshot/{}", request_type),
                 Method::Put,
@@ -134,6 +139,27 @@ mod tests {
 
     use super::*;
     use crate::api_server::parsed_request::tests::{depr_action_from_req, vmm_action_from_request};
+
+    #[test]
+    fn test_background_capture_and_abort_requests() {
+        let body = Body::new(
+            r#"{"snapshot_type":"Background","snapshot_path":"state","mem_file_path":"mem"}"#,
+        );
+        assert_eq!(
+            vmm_action_from_request(parse_put_snapshot(&body, Some("create")).unwrap()),
+            VmmAction::CreateSnapshot(CreateSnapshotParams {
+                snapshot_type: vmm::vmm_config::snapshot::SnapshotType::Background,
+                snapshot_path: "state".into(),
+                mem_file_path: "mem".into(),
+                sync_snapshot_files: true,
+            })
+        );
+        assert_eq!(
+            vmm_action_from_request(parse_put_snapshot(&Body::new("{}"), Some("abort")).unwrap()),
+            VmmAction::AbortBackgroundSnapshot
+        );
+        assert!(parse_put_snapshot(&Body::new("null"), Some("abort")).is_err());
+    }
 
     #[test]
     fn test_parse_put_snapshot() {

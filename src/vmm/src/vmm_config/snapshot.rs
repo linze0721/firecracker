@@ -20,6 +20,8 @@ pub enum SnapshotType {
     /// Full snapshot.
     #[default]
     Full,
+    /// Experimental asynchronous full snapshot; the caller still controls resume.
+    Background,
 }
 
 /// Specifies the method through which guest memory will get populated when

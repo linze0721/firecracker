@@ -815,10 +815,11 @@ paths:
 
   /snapshot/create:
     put:
-      summary: Creates a full or diff snapshot. Post-boot only.
+      summary: Creates a full, diff, or experimental background snapshot. Post-boot only.
       description:
-        Creates a snapshot of the microVM state. The microVM should be
-        in the `Paused` state.
+        The microVM must be Paused and remains Paused on return. Background arms
+        write protection and returns before copying finishes; cut disks before
+        resuming, then poll /snapshot/status. Only Complete output is loadable.
       operationId: createSnapshot
       parameters:
         - name: body
@@ -829,13 +830,45 @@ paths:
             $ref: "#/definitions/SnapshotCreateParams"
       responses:
         204:
-          description: Snapshot created
+          description: Snapshot created, or Background capture armed (not yet complete)
         400:
           description: Snapshot cannot be created due to bad input
           schema:
             $ref: "#/definitions/Error"
         default:
           description: Internal server error
+          schema:
+            $ref: "#/definitions/Error"
+
+  /snapshot/status:
+    get:
+      summary: Gets the most recent background snapshot status. Post-boot only.
+      operationId: getBackgroundSnapshotStatus
+      responses:
+        200:
+          description: Only Complete denotes loadable output; terminal status persists.
+          schema:
+            $ref: "#/definitions/BackgroundSnapshotStatus"
+        400:
+          description: VM has not booted
+          schema:
+            $ref: "#/definitions/Error"
+
+  /snapshot/abort:
+    put:
+      summary: Cancels capture, releases write protection, and deletes its outputs.
+      operationId: abortBackgroundSnapshot
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      responses:
+        204:
+          description: Worker joined; inspect status for output cleanup failures.
+        400:
+          description: VM has not booted or body is invalid
           schema:
             $ref: "#/definitions/Error"
 
@@ -1832,21 +1865,48 @@ definitions:
         enum:
           - Full
           - Diff
+          - Background
         description:
-          Type of snapshot to create. It is optional and by default, a full
-          snapshot is created.
+          Full by default. Background is an experimental asynchronous Full capture,
+          requiring --no-seccomp, anonymous RAM, base pages, and Sync block IO;
+          balloon, hotplug, pmem, vhost-user and overlapping captures are rejected.
+          Output paths must not exist. Capture does not resume the VM.
       sync_snapshot_files:
         type: boolean
         default: true
         description:
-          Whether the snapshot state and guest memory files are synced to
-          disk (fsync) before the request returns. Optional, defaults to true,
-          guaranteeing durability across host crashes. Setting it to false
+          Whether state and memory files are synced with fsync. For Background,
+          completion (not request return) waits for the memory fsync; state is
+          synced before return. Optional, defaults to true. Setting it to false
           returns without waiting for the writeback, making snapshot creation
           faster at the cost of durability across a host crash; the data stays
           in the host page cache, so same-host reads still see the full
           contents. Block device backing files are always fsync'd regardless of
           this setting.
+
+  BackgroundSnapshotStatus:
+    type: object
+    required: [state, copied_bytes, total_bytes, wp_faults, elapsed_ms]
+    properties:
+      state:
+        type: string
+        enum: [Idle, Running, Complete, Failed, Aborted]
+      copied_bytes:
+        type: integer
+        format: int64
+      total_bytes:
+        type: integer
+        format: int64
+      wp_faults:
+        type: integer
+        format: int64
+      elapsed_ms:
+        type: integer
+        format: int64
+        description: Worker duration, fixed at termination.
+      error:
+        type: string
+        description: Failure detail; null when there was no error.
 
   NetworkOverride:
     type: object

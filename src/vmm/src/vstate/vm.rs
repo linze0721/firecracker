@@ -679,6 +679,7 @@ impl KvmVm {
                 self.reset_dirty_bitmap();
                 self.guest_memory().reset_dirty();
             }
+            SnapshotType::Background => unreachable!("background capture uses its own worker"),
         };
 
         file.flush()

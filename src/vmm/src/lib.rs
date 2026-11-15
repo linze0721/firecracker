@@ -73,6 +73,8 @@ pub mod rate_limiter;
 /// Currently, we only use ACPI on x86 microVMs.
 #[cfg(target_arch = "x86_64")]
 pub mod acpi;
+/// Experimental write-protected background snapshot capture.
+pub mod background_snapshot;
 /// Handles setup and initialization a `Vmm` object.
 pub mod builder;
 /// Types for guest configuration.
@@ -316,6 +318,7 @@ pub struct Vmm {
     pub vm: Vm,
     // Device manager
     device_manager: DeviceManager,
+    background_snapshot: background_snapshot::BackgroundSnapshot,
 }
 
 impl Vmm {
@@ -783,6 +786,8 @@ fn construct_kvm_mpidrs(vcpu_states: &[VcpuState]) -> Vec<u64> {
 
 impl Drop for Vmm {
     fn drop(&mut self) {
+        // Release WP and join before waiting for potentially faulting vCPU threads.
+        self.background_snapshot.stop();
         if let Some(kvm_vm) = self.vm.as_kvm() {
             info!("Killing vCPU threads");
             kvm_vm.shutdown_vcpus();

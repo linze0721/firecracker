@@ -95,6 +95,13 @@ impl TryFrom<&Request> for ParsedRequest {
             (Method::Get, "hotplug", None) if path_tokens.next() == Some("memory") => {
                 parse_get_memory_hotplug()
             }
+            (Method::Get, "snapshot", None)
+                if path_tokens.next() == Some("status") && path_tokens.next().is_none() =>
+            {
+                Ok(ParsedRequest::new_sync(
+                    VmmAction::GetBackgroundSnapshotStatus,
+                ))
+            }
             (Method::Get, _, Some(_)) => method_to_error(Method::Get),
             (Method::Put, "actions", Some(body)) => parse_put_actions(body),
             (Method::Put, "balloon", Some(body)) => parse_put_balloon(body),
@@ -206,6 +213,7 @@ impl ParsedRequest {
                 }
                 VmmData::BalloonStats(stats) => Self::success_response_with_data(stats),
                 VmmData::VirtioMemStatus(data) => Self::success_response_with_data(data),
+                VmmData::BackgroundSnapshotStatus(data) => Self::success_response_with_data(data),
                 VmmData::HintingStatus(hinting_status) => {
                     Self::success_response_with_data(hinting_status)
                 }
@@ -614,6 +622,9 @@ pub mod tests {
                 VmmData::VirtioMemStatus(data) => {
                     http_response(&serde_json::to_string(data).unwrap(), 200)
                 }
+                VmmData::BackgroundSnapshotStatus(status) => {
+                    http_response(&serde_json::to_string(status).unwrap(), 200)
+                }
                 VmmData::HintingStatus(status) => {
                     http_response(&serde_json::to_string(status).unwrap(), 200)
                 }
@@ -643,6 +654,7 @@ pub mod tests {
             assert_eq!(buf.into_inner(), expected_response.as_bytes());
         };
 
+        verify_ok_response_with(VmmData::BackgroundSnapshotStatus(Default::default()));
         verify_ok_response_with(VmmData::BalloonConfig(BalloonDeviceConfig::default()));
         verify_ok_response_with(VmmData::BalloonStats(BalloonStats {
             swap_in: Some(1),

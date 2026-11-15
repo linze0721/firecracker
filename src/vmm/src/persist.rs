@@ -37,7 +37,9 @@ use crate::utils::u64_to_usize;
 use crate::vmm_config::boot_source::BootSourceConfig;
 use crate::vmm_config::instance_info::InstanceInfo;
 use crate::vmm_config::machine_config::{HugePageConfig, MachineConfigError, MachineConfigUpdate};
-use crate::vmm_config::snapshot::{CreateSnapshotParams, LoadSnapshotParams, MemBackendType};
+use crate::vmm_config::snapshot::{
+    CreateSnapshotParams, LoadSnapshotParams, MemBackendType, SnapshotType,
+};
 use crate::vstate::kvm::KvmState;
 use crate::vstate::memory::{
     self, GuestMemoryState, GuestRegionMmap, GuestRegionType, MemoryError,
@@ -162,6 +164,8 @@ pub enum CreateSnapshotError {
     SerializeMicrovmState(#[from] crate::snapshot::SnapshotError),
     /// Cannot perform {0} on the snapshot backing file: {1}
     SnapshotBackingFile(&'static str, io::Error),
+    /// Cannot create background snapshot: {0}
+    Background(#[from] io::Error),
 }
 
 /// Snapshot version
@@ -173,6 +177,29 @@ pub fn create_snapshot(
     vm_info: &VmInfo,
     params: &CreateSnapshotParams,
 ) -> Result<(), CreateSnapshotError> {
+    vmm.background_snapshot.prepare_next()?;
+    let background = params.snapshot_type == SnapshotType::Background;
+    if background {
+        let config = vmm.full_config();
+        if vmm.instance_info.state != crate::vmm_config::instance_info::VmState::Paused
+            || vm_info.huge_pages != HugePageConfig::None
+            || config.balloon.is_some()
+            || config.memory_hotplug.is_some()
+            || !config.pmem_devices.is_empty()
+            || config.drives.iter().any(|drive| {
+                drive.socket.is_some()
+                    || drive.file_engine_type
+                        == Some(crate::vmm_config::drive::FileEngineType::Async)
+            })
+        {
+            return Err(io::Error::other(
+                "Background requires a paused KVM VM, base pages, no balloon/hotplug/pmem/vhost-user, and Sync block IO",
+            ).into());
+        }
+        if params.snapshot_path == params.mem_file_path {
+            return Err(io::Error::other("state and memory paths must differ").into());
+        }
+    }
     let microvm_state = vmm
         .save_state(vm_info)
         .map_err(CreateSnapshotError::MicrovmState)?;
@@ -181,6 +208,7 @@ pub fn create_snapshot(
         &microvm_state,
         &params.snapshot_path,
         params.sync_snapshot_files,
+        background,
     )?;
 
     let kvm_vm = vmm.vm.as_kvm().ok_or_else(|| {
@@ -188,11 +216,25 @@ pub fn create_snapshot(
             "snapshot requires KVM".into(),
         ))
     })?;
-    kvm_vm.snapshot_memory_to_file(
-        &params.mem_file_path,
-        params.snapshot_type,
-        params.sync_snapshot_files,
-    )?;
+    if background {
+        if let Err(err) = vmm
+            .background_snapshot
+            .start(kvm_vm.guest_memory().clone(), params)
+        {
+            if let Err(cleanup) = std::fs::remove_file(&params.snapshot_path) {
+                return Err(io::Error::other(format!("{err}; state cleanup: {cleanup}")).into());
+            }
+            return Err(err.into());
+        }
+        // Do not reset either dirty bitmap after resume: that would lose the new epoch.
+        // This full capture conservatively retains the previous dirty epoch.
+    } else {
+        kvm_vm.snapshot_memory_to_file(
+            &params.mem_file_path,
+            params.snapshot_type,
+            params.sync_snapshot_files,
+        )?;
+    }
 
     // We need to mark queues as dirty again for all activated devices. The reason we
     // do it here is that we don't mark pages as dirty during runtime
@@ -207,26 +249,37 @@ fn snapshot_state_to_file(
     microvm_state: &MicrovmState,
     snapshot_path: &Path,
     sync_snapshot_files: bool,
+    exclusive: bool,
 ) -> Result<(), CreateSnapshotError> {
     use self::CreateSnapshotError::*;
     let mut snapshot_file = OpenOptions::new()
         .create(true)
+        .create_new(exclusive)
         .write(true)
         .truncate(true)
         .open(snapshot_path)
         .map_err(|err| SnapshotBackingFile("open", err))?;
 
-    let snapshot = Snapshot::new(microvm_state);
-    snapshot.save(&mut snapshot_file)?;
-    snapshot_file
-        .flush()
-        .map_err(|err| SnapshotBackingFile("flush", err))?;
-    if sync_snapshot_files {
+    let result = (|| {
+        let snapshot = Snapshot::new(microvm_state);
+        snapshot.save(&mut snapshot_file)?;
         snapshot_file
-            .sync_all()
-            .map_err(|err| SnapshotBackingFile("sync_all", err))?;
+            .flush()
+            .map_err(|err| SnapshotBackingFile("flush", err))?;
+        if sync_snapshot_files {
+            snapshot_file
+                .sync_all()
+                .map_err(|err| SnapshotBackingFile("sync_all", err))?;
+        }
+        Ok(())
+    })();
+    if exclusive && result.is_err() {
+        drop(snapshot_file);
+        if let Err(cleanup) = std::fs::remove_file(snapshot_path) {
+            return Err(io::Error::other(format!("{result:?}; state cleanup: {cleanup}")).into());
+        }
     }
-    Ok(())
+    result
 }
 
 /// Validates that snapshot CPU vendor matches the host CPU vendor.

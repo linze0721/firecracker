@@ -65,6 +65,10 @@ pub enum VmmAction {
     /// Create a snapshot using as input the `CreateSnapshotParams`. This action can only be called
     /// after the microVM has booted and only when the microVM is in `Paused` state.
     CreateSnapshot(CreateSnapshotParams),
+    /// Return the most recent background snapshot's status.
+    GetBackgroundSnapshotStatus,
+    /// Cancel background capture and release all write protection.
+    AbortBackgroundSnapshot,
     /// Get the balloon device configuration.
     GetBalloonConfig,
     /// Get the ballon device latest statistics.
@@ -255,6 +259,8 @@ pub enum VmmData {
     VirtioMemStatus(VirtioMemStatus),
     /// The status of the virtio-balloon hinting run
     HintingStatus(HintingStatus),
+    /// The most recent background snapshot's status.
+    BackgroundSnapshotStatus(crate::background_snapshot::SnapshotStatus),
 }
 
 fn mmds_patch_data(
@@ -520,6 +526,8 @@ impl<'a> PrebootApiController<'a> {
             SetMemoryHotplugDevice(config) => self.set_memory_hotplug_device(config),
             // Operations not allowed pre-boot.
             CreateSnapshot(_)
+            | GetBackgroundSnapshotStatus
+            | AbortBackgroundSnapshot
             | FlushMetrics
             | Pause
             | Resume
@@ -744,6 +752,21 @@ impl RuntimeApiController {
         match request {
             // Supported operations allowed post-boot.
             CreateSnapshot(snapshot_create_cfg) => self.create_snapshot(&snapshot_create_cfg),
+            GetBackgroundSnapshotStatus => Ok(VmmData::BackgroundSnapshotStatus(
+                self.vmm
+                    .lock()
+                    .expect("Poisoned lock")
+                    .background_snapshot
+                    .status(),
+            )),
+            AbortBackgroundSnapshot => {
+                self.vmm
+                    .lock()
+                    .expect("Poisoned lock")
+                    .background_snapshot
+                    .abort();
+                Ok(VmmData::Empty)
+            }
             FlushMetrics => self.flush_metrics(),
             GetBalloonConfig => self
                 .vmm
@@ -1004,6 +1027,7 @@ impl RuntimeApiController {
                     elapsed_time_us
                 );
             }
+            SnapshotType::Background => info!("Background snapshot armed; VM remains paused."),
         }
         Ok(VmmData::Empty)
     }

@@ -195,6 +195,8 @@ class Api:
         self.vsock = Resource(self, "/vsock")
         self.snapshot_create = Resource(self, "/snapshot/create")
         self.snapshot_load = Resource(self, "/snapshot/load")
+        self.snapshot_status = Resource(self, "/snapshot/status")
+        self.snapshot_abort = Resource(self, "/snapshot/abort")
         self.cpu_config = Resource(self, "/cpu-config")
         self.entropy = Resource(self, "/entropy")
         self.enclave = Resource(self, "/enclave")
