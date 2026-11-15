@@ -277,10 +277,6 @@ impl<'a> Persist<'a> for MMIOVirtioDevices {
         let _: Result<(), ()> = self.for_each_virtio_mmio_device(|_, devid, device| {
             let mmio_transport_locked = device.inner.lock().expect("Poisoned lock");
             let mut locked_device = mmio_transport_locked.locked_device();
-            // We need to call `prepare_save()` on the device before saving the transport
-            // so that, if we modify the transport state while preparing the device, e.g. sending
-            // an interrupt to the guest, this is correctly captured in the saved transport state.
-            locked_device.prepare_save();
             let transport_state = mmio_transport_locked.save();
             let device_info = device.resources;
             let device_id = devid.clone();
@@ -785,7 +781,7 @@ mod tests {
                 memory_hotplug_config,
             );
 
-            let device_state = vmm.device_manager.save();
+            let device_state = vmm.device_manager.save_state().unwrap();
             serialized_data = bitcode::serialize(&device_state).unwrap();
         }
 

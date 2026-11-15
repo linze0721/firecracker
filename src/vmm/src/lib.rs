@@ -127,6 +127,7 @@ use std::time::Duration;
 
 use device_manager::DeviceManager;
 use event_manager::{EventManager as BaseEventManager, EventOps, Events, MutEventSubscriber};
+#[cfg(test)]
 use snapshot::Persist;
 use vm_memory::GuestMemoryBackend;
 use vmm_sys_util::epoll::EventSet;
@@ -520,7 +521,7 @@ impl Vmm {
         // might modify the VirtIO transport and send an interrupt to the guest. If we save KVM
         // state before we save device state, that interrupt will never be delivered to the guest
         // upon resuming from the snapshot.
-        let device_states = self.device_manager.save();
+        let device_states = self.device_manager.save_state()?;
         let kvm_vm = self
             .vm
             .as_kvm()

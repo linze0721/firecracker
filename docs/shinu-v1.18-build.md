@@ -1,6 +1,6 @@
-# shinu v1.18.0 static build
+# shinu v1.18.0-shinu.1 static build
 
-Source: upstream tag `v1.18.0`, commit `eaf83bb718a559d324613d566eaf776b31a62340`, fork branch `shinu/v1.18`. No Firecracker source changes are required. Snapshot format is `12.0.0` (`firecracker --snapshot-version` prints `v12.0.0`).
+Based on upstream tag `v1.18.0`, commit `eaf83bb718a559d324613d566eaf776b31a62340`, fork branch `shinu/v1.18`, with the fail-closed device preparation patch below. Cargo injects the approved build label `Firecracker v1.18.0-shinu.1`. Snapshot format remains `12.0.0` (`firecracker --snapshot-version` prints `v12.0.0`); persisted state layouts are unchanged.
 
 ## Exact build used
 
@@ -24,10 +24,21 @@ Outputs in `build/cargo_target/x86_64-unknown-linux-musl/release/`:
 
 | File | SHA-256 |
 | --- | --- |
-| `firecracker` | `f1bb8d2b08e457f98fef888cbf01cbf0cce28caf5aabae7ae4b13af0c13d5d7f` |
+| `firecracker` | `92da5397f297ea8b5f49ff158c1ddf86d35e24575437b563ce7ccfbffcbc3a72` |
 | `jailer` | `6b57d555128e7a301c949d6c79c0983406b3205ac36ea0fcd076d0a3bb928fd5` |
 
 Both were checked with `file` (static PIE) and Firecracker has no ELF `INTERP` segment. Debug information is retained, not stripped. These hashes identify this build, not a guarantee of byte-identical builds from a different checkout path/toolchain environment.
+
+## Fail-closed snapshot preparation
+
+Upstream `VirtioBlock::prepare_save` logged drain/flush errors and continued snapshot creation. This fork returns a typed preparation error and captures available async completions even after failure, preserving resumable queues. `DeviceManager::save_state()` is the single fallible snapshot-facing entry point: it prepares devices, then invokes unchanged infallible state serialization only on success. `Vmm::save_state` propagates its error through `/snapshot/create` before any snapshot state file is written. MMIO and PCI serializers no longer prepare devices a second time; net/vsock preparation retains its prior semantics and just returns `Ok(())`.
+
+The targeted block/vsock preparation unit tests use a real `/dev/null` fsync failure and verify a healthy backend can prepare again. `test_snapshot_flush_failure_can_resume_and_keep_guest_io` injects a one-shot host fsync EIO into a paused real VM, requires create failure with no state file, resumes, writes/syncs/drops guest cache/reads a writable ext4 probe, and successfully snapshots again. The test is parameterized over PCI and MMIO.
+
+shinu only accepts allowlisted `--version` labels (currently this build) at asset installation/verification and against `/proc/<running-pid>/exe` before application capture. Its archive path is local and mandatory; stock v1.18.0 is never downloaded as a fallback. Prepare errors trigger shinu's resume/thaw transaction and prevent generation publication.
+
+Verified locally with the production seccomp filter enabled: four targeted Rust preparation tests passed; the real KVM EIO/resume/read-write/retry integration test passed on both PCI and MMIO (2 cases, 5.97 seconds). Fault injection uses `inject=fsync:error=EIO:syscall=gettid:when=1`; the allowed pure `gettid` substitution avoids strace's default invalid syscall triggering seccomp instead of the intended storage error.
+
 
 ## Guest kernel
 
@@ -63,12 +74,12 @@ Package into the same layout shinu's checksum-verifying asset installer accepts:
 ```sh
 out=build/cargo_target/x86_64-unknown-linux-musl/release
 stage=$(mktemp -d)
-mkdir "$stage/release-v1.18.0-x86_64"
-cp "$out/firecracker" "$stage/release-v1.18.0-x86_64/firecracker-v1.18.0-x86_64"
-cp "$out/jailer" "$stage/release-v1.18.0-x86_64/jailer-v1.18.0-x86_64"
-(cd "$stage/release-v1.18.0-x86_64" && sha256sum firecracker-* jailer-* > SHA256SUMS)
-tar -C "$stage" -czf firecracker-v1.18.0-x86_64.tgz release-v1.18.0-x86_64
+mkdir "$stage/release-v1.18.0-shinu.1-x86_64"
+cp "$out/firecracker" "$stage/release-v1.18.0-shinu.1-x86_64/firecracker-v1.18.0-shinu.1-x86_64"
+cp "$out/jailer" "$stage/release-v1.18.0-shinu.1-x86_64/jailer-v1.18.0-shinu.1-x86_64"
+(cd "$stage/release-v1.18.0-shinu.1-x86_64" && sha256sum firecracker-* jailer-* > SHA256SUMS)
+tar -C "$stage" -czf firecracker-v1.18.0-shinu.1-x86_64.tgz release-v1.18.0-shinu.1-x86_64
 rm -rf "$stage"
 ```
 
-Before first v1.18 daemon startup, install this archive as root at `<shinu-root>/cache/firecracker-v1.18.0-x86_64.tgz`, mode 0600, and do not modify a live deployment. shinu verifies both binary digests and creates its asset manifest. Use a maintenance window and cold restart all old Spaces to renegotiate the discard feature; a format-10 memory snapshot cannot be loaded as format 12. Keep old checkpoint disks for cold-boot fallback.
+Before startup, install this archive as root at `<shinu-root>/cache/firecracker-v1.18.0-shinu.1-x86_64.tgz`, mode 0600, without modifying a live deployment. The jailer source/version stays upstream v1.18.0; its archive entry is named for the complete shinu release. shinu verifies both binary digests and the FC build label before publishing its asset manifest. Use a maintenance window and cold restart all old Spaces to renegotiate discard; a format-10 memory snapshot cannot load as format 12. Keep old checkpoint disks for cold-boot fallback.

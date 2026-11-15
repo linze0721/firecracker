@@ -40,7 +40,9 @@ use crate::devices::virtio::ActivateError;
 use crate::devices::virtio::balloon::BalloonError;
 use crate::devices::virtio::block::BlockError;
 use crate::devices::virtio::block::device::Block;
-use crate::devices::virtio::device::{VirtioDevice, VirtioDeviceId, VirtioDeviceType};
+use crate::devices::virtio::device::{
+    SnapshotPrepareError, VirtioDevice, VirtioDeviceId, VirtioDeviceType,
+};
 use crate::devices::virtio::mem::persist::VirtioMemPersistError;
 use crate::devices::virtio::net::Net;
 use crate::devices::virtio::net::persist::NetPersistError;
@@ -474,6 +476,18 @@ impl DeviceManager {
                 enclave_devices.for_each_virtio_device_mut(&mut f);
             }
         }
+    }
+
+    /// Prepare and capture devices through one fallible snapshot entry point.
+    pub fn save_state(&self) -> Result<DevicesState, SnapshotPrepareError> {
+        let mut result = Ok(());
+        self.for_each_virtio_device_mut(|_, device| {
+            if result.is_ok() {
+                result = device.prepare_save();
+            }
+        });
+        result?;
+        Ok(self.save())
     }
 
     /// Attaches a device after VM start

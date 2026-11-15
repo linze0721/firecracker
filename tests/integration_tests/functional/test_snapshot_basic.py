@@ -9,6 +9,7 @@ import os
 import platform
 import re
 import shutil
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -92,6 +93,75 @@ def test_resume(uvm_configured, microvm_factory, resume_at_restore, huge_pages):
         restored_vm.resume()
     assert restored_vm.state == "Running"
     restored_vm.ssh.check_output("true")
+
+
+@pin_guest_kernel(GUEST_KERNEL_DEFAULT)
+def test_snapshot_flush_failure_can_resume_and_keep_guest_io(uvm):
+    """A failed host block flush aborts create without stranding device queues."""
+    trace = Path(uvm.path, "snapshot-flush.strace")
+    uvm.spawn()
+    uvm.basic_config()
+    scratch = drive_tools.FilesystemFile(os.path.join(uvm.path, "flush-probe"), size=32)
+    uvm.add_drive("flush_probe", scratch.path, io_engine="Sync", cache_type="Unsafe")
+    uvm.add_net_iface()
+    uvm.start()
+    uvm.ssh.check_output("mkdir -p /run/flush-probe; mount /dev/vdb /run/flush-probe")
+    uvm.pause()
+    # Substitute an allowed pure syscall: strace's default -1 would trip seccomp.
+    tracer = subprocess.Popen(
+        [
+            "strace",
+            "-f",
+            "-e",
+            "trace=fsync",
+            "-e",
+            "inject=fsync:error=EIO:syscall=gettid:when=1",
+            "-o",
+            str(trace),
+            "-p",
+            str(uvm.firecracker_pid),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    try:
+        for _ in range(500):
+            if (
+                f"TracerPid:\t{tracer.pid}\n"
+                in Path(f"/proc/{uvm.firecracker_pid}/status").read_text()
+            ):
+                break
+            assert tracer.poll() is None, tracer.stderr.read()
+            time.sleep(0.01)
+        else:
+            pytest.fail("strace did not attach to the paused VMM")
+        with pytest.raises(RuntimeError, match="Failed to drain and flush block IO"):
+            uvm.api.snapshot_create.put(
+                snapshot_type="Full", snapshot_path="vmstate", mem_file_path="mem"
+            )
+    finally:
+        tracer.terminate()
+        try:
+            tracer.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            tracer.kill()
+            tracer.wait(timeout=5)
+    assert uvm.state == "Paused"
+    assert "INJECTED" in trace.read_text(encoding="utf-8")
+    assert not Path(uvm.chroot(), "vmstate").exists()
+
+    uvm.resume()
+    uvm.ssh.check_output(
+        "printf resumed > /run/flush-probe/after-error; sync; "
+        "echo 3 > /proc/sys/vm/drop_caches; "
+        'test "$(cat /run/flush-probe/after-error)" = resumed'
+    )
+    # The injected error is one-shot: this same VM can snapshot again.
+    snapshot = uvm.snapshot_full()
+    assert snapshot.vmstate.exists()
+    uvm.resume()
 
 
 @pin_guest_kernel(GUEST_KERNEL_DEFAULT)

@@ -367,11 +367,7 @@ impl<'a> Persist<'a> for PciDevices {
         for pci_dev in self.virtio_devices.values() {
             let locked_pci_dev = pci_dev.lock().expect("Poisoned lock");
             let virtio_dev = locked_pci_dev.virtio_device();
-            // We need to call `prepare_save()` on the device before saving the transport
-            // so that, if we modify the transport state while preparing the device, e.g. sending
-            // an interrupt to the guest, this is correctly captured in the saved transport state.
             let mut locked_virtio_dev = virtio_dev.lock().expect("Poisoned lock");
-            locked_virtio_dev.prepare_save();
             let transport_state = locked_pci_dev.state();
 
             let sbdf = transport_state.sbdf;
@@ -815,7 +811,7 @@ mod tests {
                 memory_hotplug_config,
             );
 
-            let device_state = vmm.device_manager.save();
+            let device_state = vmm.device_manager.save_state().unwrap();
             serialized_data = bitcode::serialize(&device_state).unwrap();
             saved_allocator = vmm.vm.as_kvm().unwrap().resource_allocator().save()
         }

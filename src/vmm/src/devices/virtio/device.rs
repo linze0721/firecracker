@@ -23,6 +23,13 @@ use crate::utils::u64_to_usize;
 use crate::vmm_config::enclave::DmbSizeMib;
 use crate::vstate::memory::GuestMemoryMmap;
 
+/// A device could not establish a safe snapshot cut.
+#[derive(Debug, thiserror::Error, displaydoc::Display)]
+pub enum SnapshotPrepareError {
+    /// Failed to drain and flush block IO: {0}
+    BlockIo(#[from] crate::devices::virtio::block::virtio::VirtioBlockError),
+}
+
 /// State of an active VirtIO device
 #[derive(Debug, Clone)]
 pub struct ActiveState {
@@ -265,8 +272,10 @@ pub trait VirtioDevice: AsAny + MutEventSubscriber + Send {
         }
     }
 
-    /// Prepare the device for saving its state
-    fn prepare_save(&mut self) {}
+    /// Prepare the device for saving its state; failures abort snapshot creation.
+    fn prepare_save(&mut self) -> Result<(), SnapshotPrepareError> {
+        Ok(())
+    }
 }
 
 impl fmt::Debug for dyn VirtioDevice {

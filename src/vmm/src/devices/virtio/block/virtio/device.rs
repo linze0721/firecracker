@@ -30,7 +30,9 @@ use super::{
 use crate::devices::virtio::ActivateError;
 use crate::devices::virtio::block::CacheType;
 use crate::devices::virtio::block::virtio::metrics::{BlockDeviceMetrics, BlockMetricsPerDevice};
-use crate::devices::virtio::device::{ActiveState, DeviceState, VirtioDevice, VirtioDeviceType};
+use crate::devices::virtio::device::{
+    ActiveState, DeviceState, SnapshotPrepareError, VirtioDevice, VirtioDeviceType,
+};
 use crate::devices::virtio::generated::virtio_blk::{
     VIRTIO_BLK_F_BLK_SIZE, VIRTIO_BLK_F_DISCARD, VIRTIO_BLK_F_FLUSH, VIRTIO_BLK_F_RO,
     VIRTIO_BLK_F_TOPOLOGY, VIRTIO_BLK_ID_BYTES,
@@ -752,15 +754,22 @@ impl VirtioBlock {
     }
 
     /// Prepare device for being snapshotted.
-    pub fn prepare_save(&mut self) {
+    pub fn prepare_save(&mut self) -> Result<(), SnapshotPrepareError> {
         if !self.is_activated() {
-            return;
+            return Ok(());
         }
 
-        self.drain_and_flush(false);
+        let result = self
+            .disk
+            .file_engine
+            .drain_and_flush(false)
+            .map_err(|error| SnapshotPrepareError::BlockIo(VirtioBlockError::FileEngine(error)));
         if let FileEngine::Async(ref _engine) = self.disk.file_engine {
             self.process_async_completion_queue();
         }
+        // Complete drained requests even if the final flush failed, so resume
+        // observes the same usable queue state as the normal event path.
+        result
     }
 }
 
@@ -2020,11 +2029,31 @@ mod tests {
             // Add a batch of flush requests.
             add_flush_requests_batch(&mut block, &vq, 5);
             simulate_queue_event(&mut block, None);
-            block.prepare_save();
+            block.prepare_save().unwrap();
 
             // Check that all the pending flush requests were processed during `prepare_save()`.
             check_flush_requests_batch(5, &vq);
         }
+    }
+
+    #[test]
+    fn test_prepare_save_propagates_flush_failure_and_remains_usable() {
+        let mut block = default_block(FileEngineType::Sync);
+        let mem = default_mem();
+        let vq = VirtQueue::new(GuestAddress(0), &mem, 16);
+        block.queues[0] = vq.create_queue();
+        block.activate(mem, default_interrupt()).unwrap();
+        // /dev/null is a real file descriptor whose fsync returns EINVAL.
+        let failing =
+            FileEngine::from_file(File::open("/dev/null").unwrap(), FileEngineType::Sync).unwrap();
+        let healthy = std::mem::replace(&mut block.disk.file_engine, failing);
+        assert!(matches!(
+            block.prepare_save(),
+            Err(SnapshotPrepareError::BlockIo(_))
+        ));
+        assert!(block.is_activated());
+        block.disk.file_engine = healthy;
+        block.prepare_save().unwrap();
     }
 
     #[test]

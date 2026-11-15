@@ -134,6 +134,8 @@ pub enum MicrovmStateError {
     NotAllowed(String),
     /// Cannot restore devices: {0}
     RestoreDevices(#[from] DevicePersistError),
+    /// Cannot prepare devices for snapshot: {0}
+    PrepareDevices(#[from] crate::devices::virtio::device::SnapshotPrepareError),
     /// Cannot save Vcpu state: {0}
     SaveVcpuState(vstate::vcpu::VcpuError),
     /// Cannot save KvmVm state: {0}
@@ -748,7 +750,7 @@ mod tests {
     #[test]
     fn test_microvm_state_snapshot() {
         let vmm = default_vmm_with_devices();
-        let states = vmm.device_manager.save();
+        let states = vmm.device_manager.save_state().unwrap();
 
         // Only checking that all devices are saved, actual device state
         // is tested by that device's tests.
