@@ -31,7 +31,7 @@ Both were checked with `file` (static PIE) and Firecracker has no ELF `INTERP` s
 
 ## Guest kernel
 
-Use the newest published supported FC-CI kernel `6.18.62` from the immutable dated artifact set:
+The newest published supported FC-CI kernel is `6.18.62` in this immutable dated artifact set. It is the **build baseline**, not the Docker/LeapCore rollout binary:
 
 ```
 https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20261111-778a26c0594c-0/x86_64/vmlinux-6.18.62
@@ -39,6 +39,20 @@ SHA256 0ee1eb9074bfe4d90b3a6c0d3ea9c7c7b8c7563e69796fd73e7801db83a67b9f
 ```
 
 The [official v1.18 prefix listing](https://s3.amazonaws.com/spec.ccfc.min?list-type=2&prefix=firecracker-ci/v1.18/x86_64/) is empty. `tools/devtool:get_newest_s3_artifacts` selects dated prefixes by the newest kernel object modification date. The [official dated listing](https://s3.amazonaws.com/spec.ccfc.min?list-type=2&prefix=firecracker-ci/20261111-778a26c0594c-0/x86_64/) also publishes 6.1.188 and 5.10.271; `tests/framework/artifacts.py` supports 6.18, 6.1 and 5.10. The [kernel config](https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20261111-778a26c0594c-0/x86_64/vmlinux-6.18.62.config) builds in ACPI, virtio-blk, vsock, ext4, overlayfs, squashfs and balloon, preserving no-initrd boot and LeapCore container filesystem support.
+
+Compatibility review found that this stock CI config omits nft inet/IPv6 tables, nft masquerade, xt comment/mark/multiport, raw tables and other features enabled in 109's existing Docker-compatible 6.1.155 kernel. For 109, build Linux 6.18.62 with shinu's tracked `packaging/kernel-6.18.62.config`, the union of the old netfilter built-ins and the CI baseline. The only removed old symbol is `NF_CT_PROTO_DCCP`, which no longer exists upstream. The custom `6.18.62-shinu` vmlinux SHA-256 is `3f7808d10960bc05a1bfb107587ea1fca1d7810a2993631723637d898c0e82c8`; config SHA-256 is `d3ea50c7afcb808456c9da660de8e71b25e21dd03c2665e18a37073b52aa3ff8`. The source archive `https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.62.tar.xz` hashes to `490a7aedf1b355c565d3a6c05333ccccb5da82064eca46b590448a7099d7d651`, matching kernel.org's published checksum.
+
+The exact custom kernel commands (Debian trixie container with gcc, make, bc, bison, flex, libssl-dev and libelf-dev installed) are:
+
+```sh
+export KCONFIG_CONFIG=/config/kernel-6.18.62.config
+export KBUILD_BUILD_USER=shinu KBUILD_BUILD_HOST=shinu
+export KBUILD_BUILD_TIMESTAMP="2026-11-15 00:00:00 UTC" KBUILD_BUILD_VERSION=1
+make -C /src O=/build LOCALVERSION=-shinu olddefconfig
+make -C /src O=/build LOCALVERSION=-shinu -j4 vmlinux
+```
+
+Use shinu's `SHINU_KERNEL_FILE` plus mandatory `SHINU_KERNEL_SHA256` to seed the custom kernel, not the stock download. Boot-to-SSH is not sufficient compatibility proof: acceptance includes iptables-nft NAT/mark/comment/multiport rules, Docker bridge connectivity, and every LeapCore container healthy.
 
 Writable virtio-blk drives must explicitly set `"io_engine":"Sync","discard":true`. There is no additional guest CONFIG option for virtio-blk discard: it is a negotiated virtio feature. Ordinary file backends use hole punching, not write-zeroes. See [block-discard.md](api_requests/block-discard.md).
 
