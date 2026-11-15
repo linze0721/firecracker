@@ -4,6 +4,7 @@
 
 import dataclasses
 import filecmp
+import platform
 import time
 from pathlib import Path
 
@@ -13,7 +14,15 @@ from framework.artifacts import GUEST_KERNEL_DEFAULT, pin_guest_kernel
 from framework.utils_hugepages import HugePagesConfig
 from framework.vm_backend import VM_BACKEND_KVM, pin_vm_backend
 
-pytestmark = [pin_vm_backend(VM_BACKEND_KVM), pin_guest_kernel(GUEST_KERNEL_DEFAULT)]
+pytestmark = [
+    pin_vm_backend(VM_BACKEND_KVM),
+    pin_guest_kernel(GUEST_KERNEL_DEFAULT),
+    pytest.mark.skipif(
+        platform.machine() != "x86_64"
+        or tuple(map(int, platform.release().split(".")[:2])) < (6, 12),
+        reason="Background prototype targets x86_64 Linux 6.12+ with WP_UNPOPULATED",
+    ),
+]
 
 
 def wait_complete(vm):
