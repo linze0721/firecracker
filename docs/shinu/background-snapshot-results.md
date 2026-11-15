@@ -187,3 +187,13 @@ readiness. This proves the anonymous-RAM snapshot protocol on the stated host an
 small configuration; it does not prove the general application-freeze contract,
 writable-disk CoW latency, external pager composition, or the production 14 GiB
 world's one-second restore goal. Those limitations are explicit in the design.
+
+## Cleanup
+
+After archiving the JSON and regression log, the cleanup runner acquired the
+same flock, found no owned Firecracker process, unmounted any owned small tmpfs,
+and removed **only** `/root/fcexp-p3-bg`. It reported that the directory was gone
+and the shared base was untouched. No TAP was created. The owned copy process
+and orphan lock waiter had already exited; no deleted shinu checkpoint handle
+remained. After cleanup `free -g` showed used 0, free 15, cache 7, available
+22 GiB, swap 0. All lock holders from this slice have exited.
